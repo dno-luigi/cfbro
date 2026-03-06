@@ -4,5 +4,10 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  plugins: [react(), cloudflare(), tailwindcss()]
+  plugins: [react(), cloudflare(), tailwindcss()],
+  resolve: {
+    alias: {
+      playwright: "@cloudflare/playwright"
+    }
+  }
 });
