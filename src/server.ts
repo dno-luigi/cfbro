@@ -1,5 +1,5 @@
 import { createWorkersAI } from "workers-ai-provider";
-import { routeAgentRequest } from "agents";
+import { routeAgentRequest, callable } from "agents";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import {
   streamText,
@@ -17,17 +17,17 @@ import {
   type Browser,
   type BrowserContext,
   type Page,
-  type Locator,
   type WorkersLaunchOptions
 } from "@cloudflare/playwright";
 
 import { startScreencast } from "./screencast";
-import { type BrowserEvent, isAllowedUrl } from "./types";
+import { type BrowserEvent, type AriaRole, isAllowedUrl } from "./types";
 
 // ── Constants ───────────────────────────────────────────────────────────
 
-/** Browser session keep-alive duration (ms) — session expires after this if unused */
 const KEEP_ALIVE_MS = 600_000;
+const LIVE_VIEW_RETRY_ATTEMPTS = 3;
+const LIVE_VIEW_RETRY_DELAY_MS = 2_000;
 
 // ── Shared helpers ──────────────────────────────────────────────────────
 
@@ -85,13 +85,13 @@ async function getPageSnapshot(page: Page): Promise<string> {
 
       ref++;
       const nameValue = node.name?.value;
-      const name = nameValue ? ` "${nameValue}"` : "";
+      const name = nameValue ? ` name="${nameValue}"` : "";
       const descValue = node.description?.value;
-      const description = descValue ? ` [${descValue}]` : "";
+      const description = descValue ? ` description="${descValue}"` : "";
       const valValue = node.value?.value;
       const value = valValue ? ` value="${valValue}"` : "";
 
-      lines.push(`[ref=${ref}] ${roleValue}${name}${description}${value}`);
+      lines.push(`[${ref}] role=${roleValue}${name}${description}${value}`);
     }
 
     return lines.length > 0
@@ -131,9 +131,10 @@ async function getPageSnapshot(page: Page): Promise<string> {
           const ariaLabel = el.getAttribute("aria-label");
           const label = el.getAttribute("label");
           const txt = el.textContent?.trim().slice(0, 100);
-          elements.push(
-            `[ref=${i++}] <${tag}>${ariaLabel ? ` aria-label="${ariaLabel}"` : ""}${label ? ` label="${label}"` : ""}${txt ? ` "${txt}"` : ""}`
-          );
+          const roleStr = role ?? tag;
+          const nameStr = ariaLabel ?? label ?? txt ?? "";
+          elements.push(`[${i}] role=${roleStr} name="${nameStr}"`);
+          i++;
         }
       }
       return elements.length > 0
@@ -144,72 +145,56 @@ async function getPageSnapshot(page: Page): Promise<string> {
   }
 }
 
-async function resolveLocator(page: Page, ref: number): Promise<Locator> {
-  try {
-    const cdp = await page.context().newCDPSession(page);
-    const { nodes } = await cdp.send("Accessibility.getFullAXTree");
-    await cdp.detach();
+// ── System prompt ───────────────────────────────────────────────────────
 
-    const skipRoles = new Set([
-      "generic",
-      "text",
-      "StaticText",
-      "InlineTextBox",
-      "linebreak",
-      "presentation",
-      "none"
-    ]);
+const SYSTEM_PROMPT = `You are a browser automation assistant that controls a real web browser.
 
-    const filtered = nodes.filter(
-      (n) => n.role?.value && !skipRoles.has(String(n.role.value)) && !n.ignored
-    );
-    const node = filtered[ref - 1];
+You have these tools:
+- navigate({ url }) — Navigate to a URL (validates URL safety)
+- page_snapshot({}) — Get all interactive elements on the page with their role and name
+- click({ role, name }) — Click an element identified by its ARIA role and accessible name
+- fill({ role, name, value }) — Type text into an input field identified by role and name
+- press({ key }) — Press a keyboard key (Enter, Tab, Escape, ArrowDown, etc.)
+- scroll({ direction, amount }) — Scroll the page up or down
+- select_option({ role, name, value }) — Select an option in a dropdown/combobox
+- check({ role, name }) — Check a checkbox or radio button
+- get_text({ role, name, selector }) — Read text content from an element
+- ask_user({ message }) — Ask the user for help when stuck
 
-    if (!node) {
-      throw new Error(
-        `Element ref=${ref} not found. Take a new page_snapshot first.`
-      );
-    }
+Workflow:
+1. Use navigate() to go to a URL.
+2. Use page_snapshot() to see the page — returns elements with role and name.
+3. Use click(), fill(), press(), etc. to interact with elements using their role and name from the snapshot.
+4. After acting, use page_snapshot() again to see the updated page.
 
-    const name = String(node.name?.value ?? "");
-    const role = String(node.role?.value ?? "");
+How to use role and name from page_snapshot:
+- The snapshot format is: [N] role=rolename name="accessible name"
+- To click element [3] role=button name="Search": click({ role: "button", name: "Search" })
+- To fill element [5] role=textbox name="Email": fill({ role: "textbox", name: "Email", value: "user@example.com" })
+- To select in [7] role=combobox name="Country": select_option({ role: "combobox", name: "Country", value: "US" })
 
-    if (role === "link" && name) {
-      return page.getByRole("link", { name, exact: false });
-    }
-    if (role === "button" && name) {
-      return page.getByRole("button", { name, exact: false });
-    }
-    if (
-      (role === "textbox" || role === "searchbox" || role === "combobox") &&
-      name
-    ) {
-      return page.getByRole("textbox", { name, exact: false });
-    }
-    if (role === "heading" && name) {
-      return page.getByRole("heading", { name, exact: false });
-    }
-    if (name) {
-      return page.getByText(name, { exact: false });
-    }
+Common roles: button, link, textbox, searchbox, combobox, checkbox, radio, heading, tab, menuitem, img, listitem
 
-    throw new Error(
-      `Could not resolve element ref=${ref} (${role}). Take a new page_snapshot and try a different approach.`
-    );
-  } catch (err) {
-    if (err instanceof Error && err.message.includes("not found")) {
-      throw err;
-    }
-    throw new Error(
-      `Failed to resolve element ref=${ref}. Take a new page_snapshot first.`
-    );
-  }
-}
+IMPORTANT:
+- Always call page_snapshot before interacting to get the latest element info.
+- Use the exact role and name from the snapshot output.
+- If an action fails, take a new page_snapshot and try again with updated info.
+- After filling a form field, use press({ key: "Enter" }) to submit.
+
+When to ask the user for help:
+- If you encounter an issue you cannot resolve after 2-3 attempts (e.g., CAPTCHA, login required, unexpected popup, element not found after multiple snapshots), use the ask_user tool to request help.
+- The user will interact with the browser directly, then let you know when they are done. You will automatically resume after they respond.`;
+
+// ── Agent ───────────────────────────────────────────────────────────────
 
 export class ChatAgent extends AIChatAgent<Env> {
   private _browser: Browser | null = null;
+  private _context: BrowserContext | null = null;
   private _page: Page | null = null;
   private _stopScreencast: (() => Promise<void>) | null = null;
+  private _switchingPage: Promise<void> | null = null;
+  private _knownTargetIds: Set<string> = new Set();
+  private _sessionReady: Promise<Page> | null = null;
 
   // ── Chat message handler ────────────────────────────────────────────
 
@@ -224,335 +209,400 @@ export class ChatAgent extends AIChatAgent<Env> {
       this.broadcast(JSON.stringify(event));
     };
 
+    const tools = {
+      navigate: tool({
+        description:
+          "Navigate the browser to a URL. Always use this instead of page.goto().",
+        inputSchema: z.object({
+          url: z
+            .string()
+            .url()
+            .refine(isAllowedUrl, {
+              message:
+                "Only public HTTP/HTTPS URLs are allowed. Internal and reserved addresses are blocked."
+            })
+            .describe("The URL to navigate to, e.g. https://www.google.com")
+        }),
+        execute: async ({ url }: { url: string }) => {
+          try {
+            const page = await this.ensureBrowserSession(broadcastEvent);
+            broadcastEvent({
+              type: "browser-status",
+              status: "navigating",
+              message: `Navigating to ${url}`
+            });
+            await page.goto(url, { waitUntil: "domcontentloaded" });
+            const title = await page.title();
+            broadcastEvent({
+              type: "browser-action",
+              action: `Navigated to ${url}`,
+              step: stepCounter++
+            });
+            return { success: true, title, url: page.url() };
+          } catch (err) {
+            return { success: false, error: String(err) };
+          }
+        }
+      }),
+
+      page_snapshot: tool({
+        description:
+          "Get a snapshot of all interactive elements on the current page. Returns elements with role and name. Always call this before interacting with the page.",
+        inputSchema: z.object({}),
+        execute: async () => {
+          try {
+            const page = await this.ensureBrowserSession(broadcastEvent);
+            broadcastEvent({
+              type: "browser-status",
+              status: "acting",
+              message: "Reading page..."
+            });
+            const snapshot = await getPageSnapshot(page);
+            broadcastEvent({
+              type: "browser-action",
+              action: "Captured page snapshot",
+              step: stepCounter++
+            });
+            return { success: true, url: page.url(), snapshot };
+          } catch (err) {
+            return { success: false, error: String(err) };
+          }
+        }
+      }),
+
+      click: tool({
+        description:
+          "Click an element on the page identified by its ARIA role and accessible name. Use the role and name from page_snapshot output.",
+        inputSchema: z.object({
+          role: z
+            .string()
+            .describe("ARIA role of the element, e.g. 'button', 'link', 'tab'"),
+          name: z
+            .string()
+            .describe(
+              "Accessible name of the element from page_snapshot, e.g. 'Search'"
+            )
+        }),
+        execute: async ({ role, name }: { role: string; name: string }) => {
+          try {
+            const page = await this.ensureBrowserSession(broadcastEvent);
+            broadcastEvent({
+              type: "browser-status",
+              status: "acting",
+              message: `Clicking ${role} "${name}"`
+            });
+
+            const cdp = await page.context().newCDPSession(page);
+            const { targetInfos: targetsBefore } =
+              await cdp.send("Target.getTargets");
+            const pageTargetsBefore = targetsBefore.filter(
+              (t) => t.type === "page" && t.url !== "about:blank"
+            );
+            await cdp.detach();
+
+            await page
+              .getByRole(role as AriaRole, { name, exact: false })
+              .click();
+            await page.waitForTimeout(1000);
+
+            await this.detectAndSwitchToNewPage(page, pageTargetsBefore.length);
+
+            broadcastEvent({
+              type: "browser-action",
+              action: `Clicked ${role} "${name}"`,
+              step: stepCounter++
+            });
+            return {
+              success: true,
+              action: `Clicked ${role} "${name}"`,
+              url: this._page?.url() ?? page.url()
+            };
+          } catch (err) {
+            return { success: false, error: String(err) };
+          }
+        }
+      }),
+
+      fill: tool({
+        description:
+          "Type text into an input field identified by its ARIA role and accessible name. Clears existing content first. Use the role and name from page_snapshot output.",
+        inputSchema: z.object({
+          role: z
+            .string()
+            .describe(
+              "ARIA role of the input, e.g. 'textbox', 'searchbox', 'combobox'"
+            ),
+          name: z
+            .string()
+            .describe(
+              "Accessible name of the input from page_snapshot, e.g. 'Search'"
+            ),
+          value: z.string().describe("The text to type into the input")
+        }),
+        execute: async ({
+          role,
+          name,
+          value
+        }: {
+          role: string;
+          name: string;
+          value: string;
+        }) => {
+          try {
+            const page = await this.ensureBrowserSession(broadcastEvent);
+            broadcastEvent({
+              type: "browser-status",
+              status: "acting",
+              message: `Filling ${role} "${name}"`
+            });
+            await page
+              .getByRole(role as AriaRole, { name, exact: false })
+              .fill(value);
+            await page.waitForTimeout(500);
+            broadcastEvent({
+              type: "browser-action",
+              action: `Filled ${role} "${name}" with "${value}"`,
+              step: stepCounter++
+            });
+            return {
+              success: true,
+              action: `Filled ${role} "${name}"`,
+              url: page.url()
+            };
+          } catch (err) {
+            return { success: false, error: String(err) };
+          }
+        }
+      }),
+
+      press: tool({
+        description:
+          "Press a keyboard key. Use after filling a form to submit (Enter), navigate between fields (Tab), etc.",
+        inputSchema: z.object({
+          key: z
+            .string()
+            .describe(
+              "The key to press, e.g. 'Enter', 'Tab', 'Escape', 'ArrowDown'"
+            )
+        }),
+        execute: async ({ key }: { key: string }) => {
+          try {
+            const page = await this.ensureBrowserSession(broadcastEvent);
+            await page.keyboard.press(key);
+            await page.waitForTimeout(500);
+            broadcastEvent({
+              type: "browser-action",
+              action: `Pressed ${key}`,
+              step: stepCounter++
+            });
+            return { success: true, action: `Pressed ${key}`, url: page.url() };
+          } catch (err) {
+            return { success: false, error: String(err) };
+          }
+        }
+      }),
+
+      scroll: tool({
+        description: "Scroll the page up or down to reveal more content.",
+        inputSchema: z.object({
+          direction: z.enum(["up", "down"]).describe("Direction to scroll"),
+          amount: z
+            .number()
+            .default(3)
+            .describe("Number of viewport heights to scroll")
+        }),
+        execute: async ({
+          direction,
+          amount
+        }: {
+          direction: "up" | "down";
+          amount: number;
+        }) => {
+          try {
+            const page = await this.ensureBrowserSession(broadcastEvent);
+            const delta = direction === "down" ? amount : -amount;
+            await page.mouse.wheel(0, delta * 720);
+            await page.waitForTimeout(500);
+            broadcastEvent({
+              type: "browser-action",
+              action: `Scrolled ${direction}`,
+              step: stepCounter++
+            });
+            return { success: true, action: `Scrolled ${direction}` };
+          } catch (err) {
+            return { success: false, error: String(err) };
+          }
+        }
+      }),
+
+      select_option: tool({
+        description:
+          "Select an option in a dropdown/combobox identified by its ARIA role and accessible name.",
+        inputSchema: z.object({
+          role: z
+            .string()
+            .describe("ARIA role, typically 'combobox' or 'listbox'"),
+          name: z
+            .string()
+            .describe(
+              "Accessible name of the select element from page_snapshot"
+            ),
+          value: z
+            .string()
+            .describe("The value or label of the option to select")
+        }),
+        execute: async ({
+          role,
+          name,
+          value
+        }: {
+          role: string;
+          name: string;
+          value: string;
+        }) => {
+          try {
+            const page = await this.ensureBrowserSession(broadcastEvent);
+            broadcastEvent({
+              type: "browser-status",
+              status: "acting",
+              message: `Selecting "${value}" in ${role} "${name}"`
+            });
+            await page
+              .getByRole(role as AriaRole, { name, exact: false })
+              .selectOption(value);
+            await page.waitForTimeout(500);
+            broadcastEvent({
+              type: "browser-action",
+              action: `Selected "${value}" in ${role} "${name}"`,
+              step: stepCounter++
+            });
+            return {
+              success: true,
+              action: `Selected "${value}" in ${role} "${name}"`,
+              url: page.url()
+            };
+          } catch (err) {
+            return { success: false, error: String(err) };
+          }
+        }
+      }),
+
+      check: tool({
+        description:
+          "Check a checkbox or radio button identified by its ARIA role and accessible name.",
+        inputSchema: z.object({
+          role: z
+            .string()
+            .describe("ARIA role, typically 'checkbox' or 'radio'"),
+          name: z.string().describe("Accessible name from page_snapshot")
+        }),
+        execute: async ({ role, name }: { role: string; name: string }) => {
+          try {
+            const page = await this.ensureBrowserSession(broadcastEvent);
+            broadcastEvent({
+              type: "browser-status",
+              status: "acting",
+              message: `Checking ${role} "${name}"`
+            });
+            await page
+              .getByRole(role as AriaRole, { name, exact: false })
+              .check();
+            await page.waitForTimeout(500);
+            broadcastEvent({
+              type: "browser-action",
+              action: `Checked ${role} "${name}"`,
+              step: stepCounter++
+            });
+            return {
+              success: true,
+              action: `Checked ${role} "${name}"`,
+              url: page.url()
+            };
+          } catch (err) {
+            return { success: false, error: String(err) };
+          }
+        }
+      }),
+
+      get_text: tool({
+        description:
+          "Read text content from an element. Use to extract information from the page.",
+        inputSchema: z.object({
+          role: z
+            .string()
+            .optional()
+            .describe("ARIA role of the element to read from"),
+          name: z
+            .string()
+            .optional()
+            .describe("Accessible name of the element from page_snapshot"),
+          selector: z
+            .string()
+            .optional()
+            .describe("CSS selector as fallback if role/name not available")
+        }),
+        execute: async ({
+          role,
+          name,
+          selector
+        }: {
+          role?: string;
+          name?: string;
+          selector?: string;
+        }) => {
+          try {
+            const page = await this.ensureBrowserSession(broadcastEvent);
+            broadcastEvent({
+              type: "browser-status",
+              status: "extracting",
+              message: "Extracting text..."
+            });
+            let text: string | null;
+            if (role && name) {
+              text = await page
+                .getByRole(role as AriaRole, { name, exact: false })
+                .textContent();
+            } else if (selector) {
+              text = await page.locator(selector).textContent();
+            } else {
+              text = await page.locator("body").textContent();
+            }
+            broadcastEvent({
+              type: "browser-action",
+              action: "Extracted text",
+              step: stepCounter++
+            });
+            return {
+              success: true,
+              text: text?.slice(0, 10000) ?? "",
+              url: page.url()
+            };
+          } catch (err) {
+            return { success: false, error: String(err) };
+          }
+        }
+      })
+    };
+
     const result = streamText({
       model: workersai("@cf/moonshotai/kimi-k2.5"),
-      system: `You are a browser automation assistant that controls a real web browser using Playwright tools.
-
-You have these tools:
-- navigate: Go to a URL. Always start here.
-- page_snapshot: Get a list of all interactive elements on the page with their ref IDs. Use this to "see" the page.
-- click: Click an element by its ref number (from page_snapshot).
-- fill: Type text into an input element by its ref number.
-- press: Press a keyboard key (Enter, Tab, Escape, ArrowDown, etc.).
-- scroll: Scroll the page up or down.
-- extract_text: Read visible text content from the page.
-- ask_user: Ask the user for help when you are stuck or need information.
-
-Workflow:
-1. Use navigate to go to the target URL.
-2. Use page_snapshot to see what's on the page — this returns a list of elements with ref IDs.
-3. Use click, fill, or press to interact with elements by their ref numbers.
-4. Use extract_text to read information from the page.
-5. After acting, use page_snapshot again to see the updated page state.
-
-Important:
-- Always use page_snapshot before interacting to get the latest ref IDs.
-- Ref IDs change after navigation or page updates — never reuse old refs.
-- If an action fails, take a new page_snapshot and try again.
-- Use fill for typing into inputs, then press Enter to submit forms.
-- For scrolling long pages, use scroll then page_snapshot to see new content.
-
-When to ask the user for help:
-- If you encounter an issue you cannot resolve after 2-3 attempts (e.g., CAPTCHA, login required, unexpected popup, element not found after multiple snapshots), use the ask_user tool to request help.
-- Use ask_type "action_needed" when the user needs to do something in the browser (solve CAPTCHA, log in, dismiss a popup).
-- Use ask_type "question" when you need a text answer (which account to use, what credentials, which option to pick).
-- After calling ask_user, do NOT call any other tools — wait for the user to respond before continuing.`,
+      system: SYSTEM_PROMPT,
       messages: pruneMessages({
         messages: await convertToModelMessages(this.messages),
         toolCalls: "before-last-2-messages"
       }),
       tools: {
-        navigate: tool({
-          description: "Navigate the browser to a URL",
-          inputSchema: z.object({
-            url: z
-              .string()
-              .url()
-              .refine(isAllowedUrl, {
-                message:
-                  "Only public HTTP/HTTPS URLs are allowed. Internal and reserved addresses are blocked."
-              })
-              .describe("The URL to navigate to, e.g. https://www.google.com")
-          }),
-          execute: async ({ url }) => {
-            try {
-              const page = await this.ensureBrowserSession(broadcastEvent);
-              broadcastEvent({
-                type: "browser-status",
-                status: "navigating",
-                message: `Navigating to ${url}`
-              });
-              await page.goto(url, { waitUntil: "domcontentloaded" });
-              const title = await page.title();
-              broadcastEvent({
-                type: "browser-action",
-                action: `Navigated to ${url}`,
-                step: stepCounter++
-              });
-              return JSON.stringify({ success: true, title, url: page.url() });
-            } catch (err) {
-              return JSON.stringify({
-                success: false,
-                error: String(err)
-              });
-            }
-          }
-        }),
-
-        page_snapshot: tool({
-          description:
-            "Get a snapshot of all interactive elements on the current page. Returns elements with ref IDs you can use with click and fill. Always call this before interacting with the page.",
-          inputSchema: z.object({}),
-          execute: async () => {
-            try {
-              const page = await this.ensureBrowserSession(broadcastEvent);
-              broadcastEvent({
-                type: "browser-status",
-                status: "acting",
-                message: "Reading page..."
-              });
-              const snapshot = await getPageSnapshot(page);
-              broadcastEvent({
-                type: "browser-action",
-                action: "Captured page snapshot",
-                step: stepCounter++
-              });
-              return JSON.stringify({
-                success: true,
-                url: page.url(),
-                snapshot
-              });
-            } catch (err) {
-              return JSON.stringify({
-                success: false,
-                error: String(err)
-              });
-            }
-          }
-        }),
-
-        click: tool({
-          description:
-            "Click an element on the page identified by its ref number from page_snapshot.",
-          inputSchema: z.object({
-            ref: z
-              .number()
-              .describe(
-                "The ref number of the element to click, from page_snapshot"
-              ),
-            description: z
-              .string()
-              .describe("Brief description of what you're clicking")
-          }),
-          execute: async ({ ref, description }) => {
-            try {
-              const page = await this.ensureBrowserSession(broadcastEvent);
-              broadcastEvent({
-                type: "browser-status",
-                status: "acting",
-                message: `Clicking: ${description}`
-              });
-              const locator = await resolveLocator(page, ref);
-              await locator.click();
-              await page.waitForTimeout(500);
-              broadcastEvent({
-                type: "browser-action",
-                action: `Clicked: ${description}`,
-                step: stepCounter++
-              });
-              return JSON.stringify({
-                success: true,
-                action: description,
-                url: page.url()
-              });
-            } catch (err) {
-              return JSON.stringify({
-                success: false,
-                error: String(err)
-              });
-            }
-          }
-        }),
-
-        fill: tool({
-          description:
-            "Fill a text input or textarea with a value. Clears existing content first. Use the ref number from page_snapshot.",
-          inputSchema: z.object({
-            ref: z
-              .number()
-              .describe(
-                "The ref number of the input element, from page_snapshot"
-              ),
-            value: z.string().describe("The text to type into the input"),
-            description: z
-              .string()
-              .describe("Brief description, e.g. 'filling search box'")
-          }),
-          execute: async ({ ref, value, description }) => {
-            try {
-              const page = await this.ensureBrowserSession(broadcastEvent);
-              broadcastEvent({
-                type: "browser-status",
-                status: "acting",
-                message: description
-              });
-              const locator = await resolveLocator(page, ref);
-              await locator.fill(value);
-              broadcastEvent({
-                type: "browser-action",
-                action: description,
-                step: stepCounter++
-              });
-              return JSON.stringify({
-                success: true,
-                action: description,
-                url: page.url()
-              });
-            } catch (err) {
-              return JSON.stringify({
-                success: false,
-                error: String(err)
-              });
-            }
-          }
-        }),
-
-        press: tool({
-          description:
-            "Press a keyboard key. Use after filling a form to submit (Enter), navigate between fields (Tab), etc.",
-          inputSchema: z.object({
-            key: z
-              .string()
-              .describe(
-                "The key to press, e.g. 'Enter', 'Tab', 'Escape', 'ArrowDown'"
-              )
-          }),
-          execute: async ({ key }) => {
-            try {
-              const page = await this.ensureBrowserSession(broadcastEvent);
-              await page.keyboard.press(key);
-              await page.waitForTimeout(500);
-              broadcastEvent({
-                type: "browser-action",
-                action: `Pressed ${key}`,
-                step: stepCounter++
-              });
-              return JSON.stringify({
-                success: true,
-                action: `Pressed ${key}`,
-                url: page.url()
-              });
-            } catch (err) {
-              return JSON.stringify({
-                success: false,
-                error: String(err)
-              });
-            }
-          }
-        }),
-
-        scroll: tool({
-          description: "Scroll the page up or down to reveal more content.",
-          inputSchema: z.object({
-            direction: z.enum(["up", "down"]).describe("Direction to scroll"),
-            amount: z
-              .number()
-              .default(3)
-              .describe("Number of viewport heights to scroll")
-          }),
-          execute: async ({ direction, amount }) => {
-            try {
-              const page = await this.ensureBrowserSession(broadcastEvent);
-              const delta = direction === "down" ? 1 : -1;
-              await page.evaluate(
-                ([d, a]) => window.scrollBy(0, d * a * window.innerHeight),
-                [delta, amount] as const
-              );
-              broadcastEvent({
-                type: "browser-action",
-                action: `Scrolled ${direction}`,
-                step: stepCounter++
-              });
-              return JSON.stringify({
-                success: true,
-                action: `Scrolled ${direction}`
-              });
-            } catch (err) {
-              return JSON.stringify({
-                success: false,
-                error: String(err)
-              });
-            }
-          }
-        }),
-
-        extract_text: tool({
-          description:
-            "Extract visible text content from the current page. Use this to read information, prices, articles, etc.",
-          inputSchema: z.object({
-            selector: z
-              .string()
-              .optional()
-              .describe(
-                "Optional CSS selector to extract from a specific element. Omit to get all visible text."
-              )
-          }),
-          execute: async ({ selector }) => {
-            try {
-              const page = await this.ensureBrowserSession(broadcastEvent);
-              broadcastEvent({
-                type: "browser-status",
-                status: "extracting",
-                message: "Extracting page content..."
-              });
-              const text = selector
-                ? ((await page.locator(selector).textContent()) ?? "")
-                : await page.evaluate(() => document.body.innerText);
-              broadcastEvent({
-                type: "browser-action",
-                action: "Extracted content",
-                step: stepCounter++
-              });
-              return JSON.stringify({
-                success: true,
-                url: page.url(),
-                text: text.slice(0, 10000)
-              });
-            } catch (err) {
-              return JSON.stringify({
-                success: false,
-                error: String(err)
-              });
-            }
-          }
-        }),
-
+        ...tools,
         ask_user: tool({
           description:
-            "Ask the user for help when you are stuck or need information. Use ask_type 'action_needed' when the user needs to do something in the browser (solve CAPTCHA, log in, dismiss a popup). Use ask_type 'question' when you need a text answer (which account, what credentials, which option). After calling this tool, do NOT call any other tools — wait for the user to respond.",
+            "Ask the user for help when you are stuck. The user will interact with the browser directly (e.g. solve a CAPTCHA, log in, dismiss a popup), then let you know when they are done. You will automatically resume after they respond.",
           inputSchema: z.object({
             message: z
               .string()
               .describe(
-                "A clear description of what you need help with, e.g. 'I need you to solve the CAPTCHA in the browser' or 'Which email account should I log in with?'"
-              ),
-            askType: z
-              .enum(["question", "action_needed"])
-              .describe(
-                "'action_needed' if the user needs to do something in the browser, 'question' if you need a text answer"
+                "A clear description of what you need help with, e.g. 'I need you to solve the CAPTCHA in the browser' or 'Please log in with your credentials'"
               )
-          }),
-          execute: async ({ message, askType }) => {
-            broadcastEvent({
-              type: "user-action-needed",
-              message,
-              askType
-            });
-            return JSON.stringify({
-              success: true,
-              message: "Waiting for user response."
-            });
-          }
+          })
         })
       },
       stopWhen: stepCountIs(20),
@@ -571,6 +621,21 @@ When to ask the user for help:
       return this._page;
     }
 
+    if (this._sessionReady) {
+      return this._sessionReady;
+    }
+
+    this._sessionReady = this._createBrowserSession(broadcastEvent);
+    try {
+      return await this._sessionReady;
+    } finally {
+      this._sessionReady = null;
+    }
+  }
+
+  private async _createBrowserSession(
+    broadcastEvent: (event: BrowserEvent) => void
+  ): Promise<Page> {
     console.log("[Browser] Creating new browser session");
     broadcastEvent({
       type: "browser-status",
@@ -595,10 +660,29 @@ When to ask the user for help:
       broadcastEvent({ type: "browser-screenshot", data: base64 });
     });
 
+    const context = this._page.context();
+    if (context !== this._context) {
+      this._context = context;
+      context.on("page", (newPage) => {
+        this.switchToPage(newPage);
+      });
+    }
+
+    try {
+      const cdp = await context.newCDPSession(this._page);
+      const { targetInfos } = await cdp.send("Target.getTargets");
+      await cdp.detach();
+      this._knownTargetIds = new Set(
+        targetInfos.filter((t) => t.type === "page").map((t) => t.targetId)
+      );
+    } catch {
+      this._knownTargetIds = new Set();
+    }
+
     const sessionId = await resolveSessionId(this.env.BROWSER);
 
     if (sessionId) {
-      const liveViewUrl = await this.fetchLiveViewUrl(sessionId);
+      const liveViewUrl = await this.fetchLiveViewUrlWithRetry(sessionId);
       if (liveViewUrl) {
         broadcastEvent({ type: "browser-liveview-url", url: liveViewUrl });
       }
@@ -608,6 +692,7 @@ When to ask the user for help:
     return this._page;
   }
 
+  @callable()
   async closeBrowserSession() {
     if (this._stopScreencast) {
       try {
@@ -625,7 +710,191 @@ When to ask the user for help:
       }
     }
     this._browser = null;
+    this._context = null;
     this._page = null;
+    this._knownTargetIds.clear();
+  }
+
+  private async switchToPage(newPage: Page): Promise<void> {
+    if (newPage === this._page || newPage.isClosed()) return;
+
+    if (this._switchingPage) {
+      await this._switchingPage;
+      if (newPage === this._page) return;
+    }
+
+    const switchPromise = this._doSwitchToPage(newPage);
+    this._switchingPage = switchPromise;
+    try {
+      await switchPromise;
+    } finally {
+      if (this._switchingPage === switchPromise) {
+        this._switchingPage = null;
+      }
+    }
+  }
+
+  private async _doSwitchToPage(newPage: Page): Promise<void> {
+    if (newPage.isClosed()) return;
+
+    console.log(`[Browser] Switching to new page: ${newPage.url()}`);
+
+    if (this._stopScreencast) {
+      try {
+        await this._stopScreencast();
+      } catch {
+        // best-effort
+      }
+      this._stopScreencast = null;
+    }
+
+    this._page = newPage;
+
+    try {
+      await newPage
+        .waitForLoadState("domcontentloaded", { timeout: 5000 })
+        .catch(() => {});
+    } catch {
+      // best-effort — page may already be loaded
+    }
+
+    try {
+      this._stopScreencast = await startScreencast(this._page, (base64) => {
+        this.broadcast(
+          JSON.stringify({ type: "browser-screenshot", data: base64 })
+        );
+      });
+    } catch (e) {
+      console.error(
+        "[Browser] Screencast failed on new page, retrying after delay:",
+        e
+      );
+      await new Promise((r) => setTimeout(r, 1000));
+      try {
+        this._stopScreencast = await startScreencast(this._page, (base64) => {
+          this.broadcast(
+            JSON.stringify({ type: "browser-screenshot", data: base64 })
+          );
+        });
+      } catch (e2) {
+        console.error("[Browser] Screencast retry also failed:", e2);
+      }
+    }
+
+    const title = await newPage.title().catch(() => "");
+    console.log(`[Browser] Switched to page: "${title}" ${newPage.url()}`);
+    this.broadcast(
+      JSON.stringify({
+        type: "browser-status",
+        status: "navigating",
+        message: `Switched to new tab: ${title || newPage.url()}`
+      })
+    );
+
+    newPage.on("close", () => {
+      if (this._page === newPage) {
+        const pages = this._context?.pages().filter((p) => !p.isClosed()) ?? [];
+        const fallback = pages.find((p) => p !== newPage);
+        if (fallback) {
+          this.switchToPage(fallback);
+        } else {
+          this._page = null;
+          this._stopScreencast = null;
+        }
+      }
+    });
+  }
+
+  private async detectAndSwitchToNewPage(
+    currentPage: Page,
+    knownPageCount: number
+  ): Promise<void> {
+    const pagesAfter = this._context?.pages() ?? [];
+    const newPages = pagesAfter.filter(
+      (p) => p !== currentPage && !p.isClosed()
+    );
+    if (newPages.length > 0) {
+      const latest = newPages[newPages.length - 1];
+      console.log(
+        `[Browser] New page detected via context.pages(): ${latest.url()}`
+      );
+      await this.switchToPage(latest);
+      return;
+    }
+
+    try {
+      const cdp = await currentPage.context().newCDPSession(currentPage);
+      const { targetInfos } = await cdp.send("Target.getTargets");
+      await cdp.detach();
+
+      const pageTargets = targetInfos.filter(
+        (t) => t.type === "page" && t.url !== "about:blank"
+      );
+
+      const newTargetIds = pageTargets
+        .filter((t) => !this._knownTargetIds.has(t.targetId))
+        .map((t) => t.targetId);
+
+      this._knownTargetIds = new Set(pageTargets.map((t) => t.targetId));
+
+      if (newTargetIds.length === 0 && pageTargets.length > knownPageCount) {
+        const newestTarget = pageTargets[pageTargets.length - 1];
+        const matchingPage = pagesAfter.find(
+          (p) => !p.isClosed() && p.url() === newestTarget.url
+        );
+        if (matchingPage) {
+          console.log(
+            `[Browser] New page detected via CDP URL match: ${matchingPage.url()}`
+          );
+          await this.switchToPage(matchingPage);
+          return;
+        }
+      }
+
+      if (newTargetIds.length > 0) {
+        console.log(
+          `[Browser] New CDP target(s) detected: ${newTargetIds.join(", ")}`
+        );
+        try {
+          const newPage = await this._context!.waitForEvent("page", {
+            timeout: 2000
+          }).catch(() => null);
+          if (newPage && !newPage.isClosed()) {
+            await this.switchToPage(newPage);
+            return;
+          }
+        } catch {
+          // waitForEvent not available or timed out
+        }
+
+        const newTarget = pageTargets.find((t) =>
+          newTargetIds.includes(t.targetId)
+        );
+        if (newTarget) {
+          const allPages = this._context?.pages() ?? [];
+          const match = allPages.find(
+            (p) => !p.isClosed() && p.url() === newTarget.url
+          );
+          if (match) {
+            await this.switchToPage(match);
+            return;
+          }
+
+          console.log(
+            `[Browser] Navigating current page to new target URL: ${newTarget.url}`
+          );
+          try {
+            await currentPage.goto(newTarget.url, {
+              waitUntil: "domcontentloaded"
+            });
+          } catch (e) {
+            console.warn("[Browser] Failed to navigate to new target URL:", e);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[Browser] CDP new page detection failed:", e);
+    }
   }
 
   private async fetchLiveViewUrl(sessionId: string): Promise<string | null> {
@@ -633,7 +902,7 @@ When to ask the user for help:
     const apiToken = this.env.BROWSER_RENDERING_API_TOKEN;
 
     if (!accountId || !apiToken) {
-      console.warn(
+      console.error(
         "[Live View] Missing CLOUDFLARE_ACCOUNT_ID or BROWSER_RENDERING_API_TOKEN — live view URL unavailable"
       );
       return null;
@@ -647,7 +916,7 @@ When to ask the user for help:
       });
 
       if (!response.ok) {
-        console.warn(
+        console.error(
           `[Live View] Failed to fetch targets: ${response.status} ${await response.text()}`
         );
         return null;
@@ -657,11 +926,41 @@ When to ask the user for help:
         devtoolsFrontendUrl?: string;
       }>;
 
-      return targets[0]?.devtoolsFrontendUrl ?? null;
+      if (!targets.length) {
+        console.error("[Live View] No targets returned from API");
+        return null;
+      }
+
+      const devtoolsUrl = targets[0]?.devtoolsFrontendUrl ?? null;
+      if (!devtoolsUrl) {
+        console.error("[Live View] No devtoolsFrontendUrl in target response");
+      }
+      return devtoolsUrl;
     } catch (err) {
-      console.warn("[Live View] Error fetching live view URL:", err);
+      console.error("[Live View] Error fetching live view URL:", err);
       return null;
     }
+  }
+
+  private async fetchLiveViewUrlWithRetry(
+    sessionId: string
+  ): Promise<string | null> {
+    for (let attempt = 1; attempt <= LIVE_VIEW_RETRY_ATTEMPTS; attempt++) {
+      const url = await this.fetchLiveViewUrl(sessionId);
+      if (url) return url;
+
+      console.error(
+        `[Live View] Attempt ${attempt}/${LIVE_VIEW_RETRY_ATTEMPTS} failed`
+      );
+
+      if (attempt < LIVE_VIEW_RETRY_ATTEMPTS) {
+        await new Promise((r) => setTimeout(r, LIVE_VIEW_RETRY_DELAY_MS));
+      }
+    }
+    console.error(
+      `[Live View] All ${LIVE_VIEW_RETRY_ATTEMPTS} attempts failed — live view unavailable`
+    );
+    return null;
   }
 }
 

@@ -1,6 +1,90 @@
 // ── Shared types for browser events ─────────────────────────────────
 // Used by both server (broadcast) and client (receive) over WebSocket.
 
+export type AriaRole =
+  | "alert"
+  | "alertdialog"
+  | "application"
+  | "article"
+  | "banner"
+  | "blockquote"
+  | "button"
+  | "caption"
+  | "cell"
+  | "checkbox"
+  | "code"
+  | "columnheader"
+  | "combobox"
+  | "complementary"
+  | "contentinfo"
+  | "definition"
+  | "deletion"
+  | "dialog"
+  | "directory"
+  | "document"
+  | "emphasis"
+  | "feed"
+  | "figure"
+  | "form"
+  | "generic"
+  | "grid"
+  | "gridcell"
+  | "group"
+  | "heading"
+  | "img"
+  | "insertion"
+  | "link"
+  | "list"
+  | "listbox"
+  | "listitem"
+  | "log"
+  | "main"
+  | "marquee"
+  | "math"
+  | "menu"
+  | "menubar"
+  | "menuitem"
+  | "menuitemcheckbox"
+  | "menuitemradio"
+  | "meter"
+  | "navigation"
+  | "none"
+  | "note"
+  | "option"
+  | "paragraph"
+  | "presentation"
+  | "progressbar"
+  | "radio"
+  | "radiogroup"
+  | "region"
+  | "row"
+  | "rowgroup"
+  | "rowheader"
+  | "scrollbar"
+  | "search"
+  | "searchbox"
+  | "separator"
+  | "slider"
+  | "spinbutton"
+  | "status"
+  | "strong"
+  | "subscript"
+  | "superscript"
+  | "switch"
+  | "tab"
+  | "table"
+  | "tablist"
+  | "tabpanel"
+  | "term"
+  | "textbox"
+  | "time"
+  | "timer"
+  | "toolbar"
+  | "tooltip"
+  | "tree"
+  | "treegrid"
+  | "treeitem";
+
 export type BrowserStatus =
   | "starting"
   | "navigating"
@@ -25,12 +109,7 @@ export type BrowserEvent =
       message?: string;
     }
   | { type: "browser-error"; error: string }
-  | { type: "browser-liveview-url"; url: string }
-  | {
-      type: "user-action-needed";
-      message: string;
-      askType: "question" | "action_needed";
-    };
+  | { type: "browser-liveview-url"; url: string };
 
 // ── Runtime validation ──────────────────────────────────────────────
 // Validates that an unknown value from the WebSocket is a BrowserEvent.
@@ -40,8 +119,7 @@ const BROWSER_EVENT_TYPES = new Set([
   "browser-action",
   "browser-status",
   "browser-error",
-  "browser-liveview-url",
-  "user-action-needed"
+  "browser-liveview-url"
 ]);
 
 export function isBrowserEvent(value: unknown): value is BrowserEvent {

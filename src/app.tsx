@@ -96,7 +96,9 @@ const TOOL_LABELS: Record<string, string> = {
   fill: "Fill",
   press: "Press key",
   scroll: "Scroll",
-  extract_text: "Extract text",
+  select_option: "Select option",
+  check: "Check",
+  get_text: "Extract text",
   ask_user: "Ask user"
 };
 
@@ -107,8 +109,9 @@ const TOOL_IN_PROGRESS: Record<string, string> = {
   fill: "Typing...",
   press: "Pressing key...",
   scroll: "Scrolling...",
-  extract_text: "Extracting content...",
-  ask_user: "Asking for help..."
+  select_option: "Selecting...",
+  check: "Checking...",
+  get_text: "Extracting text..."
 };
 
 function toolOutputSummary(toolName: string, output: unknown): string {
@@ -117,24 +120,27 @@ function toolOutputSummary(toolName: string, output: unknown): string {
     if (!o?.success && o?.error) return `Error: ${o.error}`;
     switch (toolName) {
       case "navigate":
-        return o?.title ? `Navigated to: ${o.title}` : `Navigated`;
+        return o?.title ? `Navigated to: ${o.title}` : "Navigated";
       case "page_snapshot":
         return "Captured page snapshot";
       case "click":
-        return o?.action ? `Clicked: ${o.action}` : "Clicked";
+        return o?.action ? String(o.action) : "Clicked";
       case "fill":
-        return o?.action ? `Filled: ${o.action}` : "Filled input";
+        return o?.action ? String(o.action) : "Filled input";
       case "press":
         return o?.action ?? "Pressed key";
       case "scroll":
         return o?.action ?? "Scrolled";
-      case "extract_text":
-        return o?.text
-          ? `Extracted ${o.text.length} chars`
-          : "Extracted content";
+      case "select_option":
+        return o?.action ?? "Selected option";
+      case "check":
+        return o?.action ?? "Checked";
+      case "get_text":
+        return o?.text ? `Extracted ${o.text.length} chars` : "Extracted text";
       case "ask_user":
-        return o?.message ?? "Asked user for help";
-
+        return typeof output === "string"
+          ? String(output).slice(0, 120)
+          : "Asked user for help";
       default:
         return o?.success ? "Done" : JSON.stringify(o).slice(0, 120);
     }
@@ -159,7 +165,7 @@ function ToolPartView({ part }: { part: UIMessage["parts"][number] }) {
             </Text>
             <Badge variant="secondary">Done</Badge>
           </div>
-          <div className="font-mono">
+          <div className="font-mono break-words">
             <Text size="xs" variant="secondary">
               {toolOutputSummary(toolName, part.output)}
             </Text>
@@ -172,11 +178,17 @@ function ToolPartView({ part }: { part: UIMessage["parts"][number] }) {
   if (part.state === "input-available" || part.state === "input-streaming") {
     return (
       <div className="flex justify-start">
-        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-kumo-line">
+        <Surface className="max-w-[85%] px-4 py-2.5 rounded-xl ring ring-amber-500/30 bg-amber-500/5">
           <div className="flex items-center gap-2">
-            <GlobeIcon size={14} className="text-kumo-accent animate-pulse" />
+            <HandPointingIcon
+              size={14}
+              weight="fill"
+              className="text-amber-500"
+            />
             <Text size="xs" variant="secondary">
-              {TOOL_IN_PROGRESS[toolName] ?? "Working..."}
+              {toolName === "ask_user"
+                ? "Waiting for your response..."
+                : (TOOL_IN_PROGRESS[toolName] ?? "Working...")}
             </Text>
           </div>
         </Surface>
@@ -267,14 +279,16 @@ function BrowserPanel({
       {/* Status message */}
       {statusMessage && isActive && (
         <div className="px-4 py-2 border-b border-kumo-line bg-kumo-control">
-          <div className="flex items-center gap-2">
+          <div className="flex items-start gap-2">
             <ArrowClockwiseIcon
               size={12}
-              className="text-kumo-accent animate-spin"
+              className="text-kumo-accent animate-spin shrink-0 mt-0.5"
             />
-            <Text size="xs" variant="secondary">
-              {statusMessage}
-            </Text>
+            <span className="break-words">
+              <Text size="xs" variant="secondary">
+                {statusMessage}
+              </Text>
+            </span>
           </div>
         </div>
       )}
@@ -282,11 +296,16 @@ function BrowserPanel({
       {/* Error bar */}
       {error && (
         <div className="px-4 py-2 border-b border-kumo-line bg-red-500/10">
-          <div className="flex items-center gap-2">
-            <WarningCircleIcon size={12} className="text-red-500" />
-            <Text size="xs" variant="secondary">
-              {error}
-            </Text>
+          <div className="flex items-start gap-2">
+            <WarningCircleIcon
+              size={12}
+              className="text-red-500 shrink-0 mt-0.5"
+            />
+            <span className="break-words whitespace-pre-wrap">
+              <Text size="xs" variant="secondary">
+                {error}
+              </Text>
+            </span>
           </div>
         </div>
       )}
@@ -294,12 +313,17 @@ function BrowserPanel({
       {/* Chrome warning banner for Live View */}
       {viewMode === "liveview" && !isChrome && (
         <div className="px-4 py-2 border-b border-kumo-line bg-yellow-500/10">
-          <div className="flex items-center gap-2">
-            <WarningCircleIcon size={12} className="text-yellow-500" />
-            <Text size="xs" variant="secondary">
-              Live View is optimized for Chrome. Other browsers may have limited
-              functionality.
-            </Text>
+          <div className="flex items-start gap-2">
+            <WarningCircleIcon
+              size={12}
+              className="text-yellow-500 shrink-0 mt-0.5"
+            />
+            <span className="break-words">
+              <Text size="xs" variant="secondary">
+                Live View is optimized for Chrome. Other browsers may have
+                limited functionality.
+              </Text>
+            </span>
           </div>
         </div>
       )}
@@ -359,7 +383,7 @@ function BrowserPanel({
                           weight="fill"
                         />
                       </div>
-                      <div className="min-w-0">
+                      <div className="min-w-0 break-words">
                         <Text size="xs" variant="secondary">
                           <span className="font-mono text-kumo-inactive mr-1.5">
                             {a.step}.
@@ -427,12 +451,10 @@ function NotificationToggle() {
 
 function UserActionBanner({
   message,
-  askType,
   onContinue,
   onDismiss
 }: {
   message: string;
-  askType: "question" | "action_needed";
   onContinue: () => void;
   onDismiss: () => void;
 }) {
@@ -447,9 +469,7 @@ function UserActionBanner({
         <div className="flex-1 min-w-0">
           <div className="text-amber-600 dark:text-amber-400">
             <Text size="sm" bold>
-              {askType === "action_needed"
-                ? "Action needed in browser"
-                : "Agent has a question"}
+              Action needed in browser
             </Text>
           </div>
           <div className="mt-0.5">
@@ -457,23 +477,14 @@ function UserActionBanner({
               {message}
             </Text>
           </div>
-          {askType === "action_needed" && (
-            <div className="mt-2 flex items-center gap-2">
-              <Button variant="primary" size="sm" onClick={onContinue}>
-                I&apos;ve taken action, continue
-              </Button>
-              <Button variant="ghost" size="sm" onClick={onDismiss}>
-                Dismiss
-              </Button>
-            </div>
-          )}
-          {askType === "question" && (
-            <div className="mt-1 italic">
-              <Text size="xs" variant="secondary">
-                Type your answer below
-              </Text>
-            </div>
-          )}
+          <div className="mt-2 flex items-center gap-2">
+            <Button variant="primary" size="sm" onClick={onContinue}>
+              I&apos;ve taken action, continue
+            </Button>
+            <Button variant="ghost" size="sm" onClick={onDismiss}>
+              Dismiss
+            </Button>
+          </div>
         </div>
       </div>
     </div>
@@ -503,7 +514,7 @@ function Chat() {
   const [liveViewUrl, setLiveViewUrl] = useState<string | null>(null);
   const [userActionNeeded, setUserActionNeeded] = useState<{
     message: string;
-    askType: "question" | "action_needed";
+    toolCallId: string;
   } | null>(null);
   const clearedRef = useRef(false);
 
@@ -550,10 +561,22 @@ function Chat() {
           setBrowserError(raw.error);
         } else if (raw.type === "browser-liveview-url") {
           setLiveViewUrl(raw.url);
-        } else if (raw.type === "user-action-needed") {
+        }
+      } catch {
+        // Not JSON or not our event — ignore
+      }
+    }, [])
+  });
+
+  const { messages, sendMessage, clearHistory, stop, status, addToolOutput } =
+    useAgentChat({
+      agent,
+      onToolCall: async ({ toolCall }) => {
+        if (toolCall.toolName === "ask_user") {
+          const input = toolCall.input as { message: string };
           setUserActionNeeded({
-            message: raw.message,
-            askType: raw.askType
+            message: input.message,
+            toolCallId: toolCall.toolCallId
           });
           const notificationsEnabled =
             localStorage.getItem("notifications") === "enabled";
@@ -562,12 +585,8 @@ function Chat() {
             typeof Notification !== "undefined" &&
             Notification.permission === "granted"
           ) {
-            const title =
-              raw.askType === "action_needed"
-                ? "Agent needs your help"
-                : "Agent has a question";
-            const notification = new Notification(title, {
-              body: raw.message
+            const notification = new Notification("Agent needs your help", {
+              body: input.message
             });
             notification.onclick = () => {
               window.focus();
@@ -575,15 +594,8 @@ function Chat() {
             };
           }
         }
-      } catch {
-        // Not JSON or not our event — ignore
       }
-    }, [])
-  });
-
-  const { messages, sendMessage, clearHistory, stop, status } = useAgentChat({
-    agent
-  });
+    });
 
   const isStreaming = status === "streaming" || status === "submitted";
 
@@ -601,7 +613,6 @@ function Chat() {
     const text = input.trim();
     if (!text || isStreaming) return;
     setInput("");
-    setUserActionNeeded(null);
     sendMessage({ role: "user", parts: [{ type: "text", text }] });
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
@@ -610,6 +621,13 @@ function Chat() {
 
   const handleClear = useCallback(async () => {
     clearedRef.current = true;
+    if (userActionNeeded) {
+      addToolOutput({
+        toolCallId: userActionNeeded.toolCallId,
+        state: "output-error",
+        errorText: "User cleared the conversation."
+      });
+    }
     clearHistory();
     setBrowserScreenshot(null);
     setBrowserActions([]);
@@ -623,20 +641,28 @@ function Chat() {
     } catch {
       // best-effort — session may not exist
     }
-  }, [clearHistory, agent]);
+  }, [clearHistory, agent, userActionNeeded, addToolOutput]);
 
   const handleContinue = useCallback(() => {
+    if (!userActionNeeded) return;
+    const toolCallId = userActionNeeded.toolCallId;
     setUserActionNeeded(null);
-    sendMessage({
-      role: "user",
-      parts: [
-        {
-          type: "text",
-          text: "I've resolved the issue, please take a page_snapshot and continue."
-        }
-      ]
+    addToolOutput({
+      toolCallId,
+      output: "User has taken action. Please take a page_snapshot and continue."
     });
-  }, [sendMessage]);
+  }, [userActionNeeded, addToolOutput]);
+
+  const handleDismiss = useCallback(() => {
+    if (!userActionNeeded) return;
+    const toolCallId = userActionNeeded.toolCallId;
+    setUserActionNeeded(null);
+    addToolOutput({
+      toolCallId,
+      state: "output-error",
+      errorText: "User dismissed the request."
+    });
+  }, [userActionNeeded, addToolOutput]);
 
   return (
     <div className="flex flex-col h-screen bg-kumo-elevated">
@@ -775,9 +801,8 @@ function Chat() {
             {userActionNeeded && (
               <UserActionBanner
                 message={userActionNeeded.message}
-                askType={userActionNeeded.askType}
                 onContinue={handleContinue}
-                onDismiss={() => setUserActionNeeded(null)}
+                onDismiss={handleDismiss}
               />
             )}
             <form
