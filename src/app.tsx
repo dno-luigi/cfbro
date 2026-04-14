@@ -25,7 +25,6 @@ import {
   StopIcon,
   TrashIcon,
   GearIcon,
-  ChatCircleDotsIcon,
   CircleIcon,
   MoonIcon,
   SunIcon,
@@ -34,7 +33,11 @@ import {
   CheckCircleIcon,
   WarningCircleIcon,
   ImageIcon,
-  ListIcon
+  ListIcon,
+  DesktopIcon,
+  BellIcon,
+  BellSlashIcon,
+  HandPointingIcon
 } from "@phosphor-icons/react";
 import { type BrowserStatus, isBrowserEvent, isValidBase64 } from "./types";
 
@@ -86,9 +89,64 @@ function BrowserStatusBadge({ status }: { status: BrowserStatus | "idle" }) {
 
 // ── Tool rendering ────────────────────────────────────────────────────
 
+const TOOL_LABELS: Record<string, string> = {
+  navigate: "Navigate",
+  page_snapshot: "Page snapshot",
+  click: "Click",
+  fill: "Fill",
+  press: "Press key",
+  scroll: "Scroll",
+  extract_text: "Extract text",
+  ask_user: "Ask user"
+};
+
+const TOOL_IN_PROGRESS: Record<string, string> = {
+  navigate: "Navigating...",
+  page_snapshot: "Reading page...",
+  click: "Clicking...",
+  fill: "Typing...",
+  press: "Pressing key...",
+  scroll: "Scrolling...",
+  extract_text: "Extracting content...",
+  ask_user: "Asking for help..."
+};
+
+function toolOutputSummary(toolName: string, output: unknown): string {
+  try {
+    const o = typeof output === "string" ? JSON.parse(output) : output;
+    if (!o?.success && o?.error) return `Error: ${o.error}`;
+    switch (toolName) {
+      case "navigate":
+        return o?.title ? `Navigated to: ${o.title}` : `Navigated`;
+      case "page_snapshot":
+        return "Captured page snapshot";
+      case "click":
+        return o?.action ? `Clicked: ${o.action}` : "Clicked";
+      case "fill":
+        return o?.action ? `Filled: ${o.action}` : "Filled input";
+      case "press":
+        return o?.action ?? "Pressed key";
+      case "scroll":
+        return o?.action ?? "Scrolled";
+      case "extract_text":
+        return o?.text
+          ? `Extracted ${o.text.length} chars`
+          : "Extracted content";
+      case "ask_user":
+        return o?.message ?? "Asked user for help";
+
+      default:
+        return o?.success ? "Done" : JSON.stringify(o).slice(0, 120);
+    }
+  } catch {
+    return String(output).slice(0, 120);
+  }
+}
+
 function ToolPartView({ part }: { part: UIMessage["parts"][number] }) {
   if (!isToolUIPart(part)) return null;
   const toolName = getToolName(part);
+  const label = TOOL_LABELS[toolName] ?? toolName;
 
   if (part.state === "output-available") {
     return (
@@ -97,29 +155,13 @@ function ToolPartView({ part }: { part: UIMessage["parts"][number] }) {
           <div className="flex items-center gap-2 mb-1">
             <GearIcon size={14} className="text-kumo-inactive" />
             <Text size="xs" variant="secondary" bold>
-              {toolName}
+              {label}
             </Text>
             <Badge variant="secondary">Done</Badge>
           </div>
           <div className="font-mono">
             <Text size="xs" variant="secondary">
-              {(() => {
-                try {
-                  const output =
-                    typeof part.output === "string"
-                      ? JSON.parse(part.output)
-                      : part.output;
-                  if (output?.success) {
-                    return `Browsed ${output.pageTitle || output.url} (${output.totalSteps} steps)`;
-                  }
-                  if (output?.error) {
-                    return `Error: ${output.error}`;
-                  }
-                  return JSON.stringify(output, null, 2);
-                } catch {
-                  return String(part.output).slice(0, 200);
-                }
-              })()}
+              {toolOutputSummary(toolName, part.output)}
             </Text>
           </div>
         </Surface>
@@ -134,7 +176,7 @@ function ToolPartView({ part }: { part: UIMessage["parts"][number] }) {
           <div className="flex items-center gap-2">
             <GlobeIcon size={14} className="text-kumo-accent animate-pulse" />
             <Text size="xs" variant="secondary">
-              Browsing the web...
+              {TOOL_IN_PROGRESS[toolName] ?? "Working..."}
             </Text>
           </div>
         </Surface>
@@ -152,20 +194,37 @@ function BrowserPanel({
   actions,
   browserStatus,
   statusMessage,
-  error
+  error,
+  liveViewUrl
 }: {
   screenshot: string | null;
   actions: Array<{ action: string; step: number }>;
   browserStatus: BrowserStatus | "idle";
   statusMessage: string;
   error: string | null;
+  liveViewUrl: string | null;
 }) {
   const actionsEndRef = useRef<HTMLDivElement>(null);
   const [showActions, setShowActions] = useState(true);
+  const [viewMode, setViewMode] = useState<"screencast" | "liveview">(
+    "screencast"
+  );
+
+  // Detect Chrome browser for Live View warning
+  const isChrome =
+    typeof navigator !== "undefined" &&
+    /Chrome/.test(navigator.userAgent) &&
+    !/Edg/.test(navigator.userAgent);
 
   useEffect(() => {
     actionsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [actions]);
+
+  // Auto-switch to live view when URL arrives, back to screencast when gone
+  useEffect(() => {
+    if (liveViewUrl) setViewMode("liveview");
+    else setViewMode("screencast");
+  }, [liveViewUrl]);
 
   const isActive = browserStatus !== "idle" && browserStatus !== "done";
 
@@ -181,6 +240,17 @@ function BrowserPanel({
           <BrowserStatusBadge status={browserStatus} />
         </div>
         <div className="flex items-center gap-1">
+          <Button
+            variant={viewMode === "liveview" ? "primary" : "ghost"}
+            size="sm"
+            shape="square"
+            icon={<DesktopIcon size={14} />}
+            onClick={() =>
+              setViewMode((v) => (v === "liveview" ? "screencast" : "liveview"))
+            }
+            disabled={!liveViewUrl}
+            aria-label="Toggle Live View"
+          />
           <Button
             variant="ghost"
             size="sm"
@@ -221,65 +291,190 @@ function BrowserPanel({
         </div>
       )}
 
+      {/* Chrome warning banner for Live View */}
+      {viewMode === "liveview" && !isChrome && (
+        <div className="px-4 py-2 border-b border-kumo-line bg-yellow-500/10">
+          <div className="flex items-center gap-2">
+            <WarningCircleIcon size={12} className="text-yellow-500" />
+            <Text size="xs" variant="secondary">
+              Live View is optimized for Chrome. Other browsers may have limited
+              functionality.
+            </Text>
+          </div>
+        </div>
+      )}
+
       {/* Content area */}
       <div className="flex-1 overflow-hidden flex flex-col">
-        {/* Screenshot */}
-        <div
-          className={`flex-1 overflow-auto ${showActions && actions.length > 0 ? "basis-3/5" : ""}`}
-        >
-          {screenshot ? (
-            <img
-              src={`data:image/jpeg;base64,${screenshot}`}
-              alt="Browser screenshot"
-              className="w-full h-auto"
-            />
-          ) : (
-            <div className="flex items-center justify-center h-full text-kumo-inactive">
-              <div className="text-center space-y-2">
-                <GlobeIcon size={48} className="mx-auto opacity-30" />
-                <Text size="sm" variant="secondary">
-                  No browser activity yet
-                </Text>
-                <Text size="xs" variant="secondary">
-                  Ask me to browse the web and the view will appear here
-                </Text>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Action log */}
-        {showActions && actions.length > 0 && (
-          <div className="basis-2/5 border-t border-kumo-line overflow-auto">
-            <div className="px-3 py-2 border-b border-kumo-line bg-kumo-control sticky top-0">
-              <Text size="xs" bold variant="secondary">
-                Action Log ({actions.length} steps)
-              </Text>
-            </div>
-            <div className="px-3 py-2 space-y-1.5">
-              {actions.map((a, i) => (
-                <div key={i} className="flex items-start gap-2">
-                  <div className="shrink-0 mt-0.5">
-                    <CheckCircleIcon
-                      size={12}
-                      className="text-kumo-success"
-                      weight="fill"
-                    />
-                  </div>
-                  <div className="min-w-0">
+        {viewMode === "liveview" && liveViewUrl ? (
+          // Live View: embed Chrome DevTools frontend in an iframe
+          <iframe
+            src={liveViewUrl}
+            className="w-full h-full border-0"
+            title="Browser Live View"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+          />
+        ) : (
+          // Screencast: existing base64 JPEG stream
+          <>
+            <div
+              className={`flex-1 overflow-auto ${showActions && actions.length > 0 ? "basis-3/5" : ""}`}
+            >
+              {screenshot ? (
+                <img
+                  src={`data:image/jpeg;base64,${screenshot}`}
+                  alt="Browser screenshot"
+                  className="w-full h-auto"
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full text-kumo-inactive">
+                  <div className="text-center space-y-2">
+                    <GlobeIcon size={48} className="mx-auto opacity-30" />
+                    <Text size="sm" variant="secondary">
+                      No browser activity yet
+                    </Text>
                     <Text size="xs" variant="secondary">
-                      <span className="font-mono text-kumo-inactive mr-1.5">
-                        {a.step}.
-                      </span>
-                      {a.action}
+                      Ask me to browse the web and the view will appear here
                     </Text>
                   </div>
                 </div>
-              ))}
-              <div ref={actionsEndRef} />
+              )}
             </div>
-          </div>
+
+            {/* Action log */}
+            {showActions && actions.length > 0 && (
+              <div className="basis-2/5 border-t border-kumo-line overflow-auto">
+                <div className="px-3 py-2 border-b border-kumo-line bg-kumo-control sticky top-0">
+                  <Text size="xs" bold variant="secondary">
+                    Action Log ({actions.length} steps)
+                  </Text>
+                </div>
+                <div className="px-3 py-2 space-y-1.5">
+                  {actions.map((a) => (
+                    <div key={a.step} className="flex items-start gap-2">
+                      <div className="shrink-0 mt-0.5">
+                        <CheckCircleIcon
+                          size={12}
+                          className="text-kumo-success"
+                          weight="fill"
+                        />
+                      </div>
+                      <div className="min-w-0">
+                        <Text size="xs" variant="secondary">
+                          <span className="font-mono text-kumo-inactive mr-1.5">
+                            {a.step}.
+                          </span>
+                          {a.action}
+                        </Text>
+                      </div>
+                    </div>
+                  ))}
+                  <div ref={actionsEndRef} />
+                </div>
+              </div>
+            )}
+          </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Notification Toggle ────────────────────────────────────────────────
+
+function NotificationToggle() {
+  const [enabled, setEnabled] = useState(() => {
+    return localStorage.getItem("notifications") === "enabled";
+  });
+  const [permission, setPermission] = useState<NotificationPermission>(
+    typeof Notification !== "undefined" ? Notification.permission : "denied"
+  );
+
+  const toggle = useCallback(async () => {
+    if (!enabled && permission !== "granted") {
+      const result = await Notification.requestPermission();
+      setPermission(result);
+      if (result !== "granted") return;
+    }
+    const next = !enabled;
+    setEnabled(next);
+    localStorage.setItem("notifications", next ? "enabled" : "disabled");
+  }, [enabled, permission]);
+
+  const icon =
+    enabled && permission === "granted" ? (
+      <BellIcon size={16} weight="fill" />
+    ) : (
+      <BellSlashIcon size={16} />
+    );
+
+  return (
+    <Button
+      variant={enabled ? "primary" : "secondary"}
+      shape="square"
+      icon={icon}
+      onClick={toggle}
+      aria-label={
+        enabled && permission === "granted"
+          ? "Notifications on"
+          : "Notifications off"
+      }
+    />
+  );
+}
+
+// ── User Action Banner ─────────────────────────────────────────────────
+
+function UserActionBanner({
+  message,
+  askType,
+  onContinue,
+  onDismiss
+}: {
+  message: string;
+  askType: "question" | "action_needed";
+  onContinue: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="px-5 py-3 bg-amber-500/10 border-t border-amber-500/30">
+      <div className="flex items-start gap-3">
+        <HandPointingIcon
+          size={20}
+          weight="fill"
+          className="text-amber-500 shrink-0 mt-0.5"
+        />
+        <div className="flex-1 min-w-0">
+          <div className="text-amber-600 dark:text-amber-400">
+            <Text size="sm" bold>
+              {askType === "action_needed"
+                ? "Action needed in browser"
+                : "Agent has a question"}
+            </Text>
+          </div>
+          <div className="mt-0.5">
+            <Text size="sm" variant="secondary">
+              {message}
+            </Text>
+          </div>
+          {askType === "action_needed" && (
+            <div className="mt-2 flex items-center gap-2">
+              <Button variant="primary" size="sm" onClick={onContinue}>
+                I&apos;ve taken action, continue
+              </Button>
+              <Button variant="ghost" size="sm" onClick={onDismiss}>
+                Dismiss
+              </Button>
+            </div>
+          )}
+          {askType === "question" && (
+            <div className="mt-1 italic">
+              <Text size="xs" variant="secondary">
+                Type your answer below
+              </Text>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -305,6 +500,12 @@ function Chat() {
   );
   const [browserStatusMessage, setBrowserStatusMessage] = useState("");
   const [browserError, setBrowserError] = useState<string | null>(null);
+  const [liveViewUrl, setLiveViewUrl] = useState<string | null>(null);
+  const [userActionNeeded, setUserActionNeeded] = useState<{
+    message: string;
+    askType: "question" | "action_needed";
+  } | null>(null);
+  const clearedRef = useRef(false);
 
   const agent = useAgent({
     agent: "ChatAgent",
@@ -322,7 +523,7 @@ function Chat() {
         if (!isBrowserEvent(raw)) return;
 
         if (raw.type === "browser-screenshot") {
-          // Validate base64 payload before injecting into a data URI
+          if (clearedRef.current) return;
           if (isValidBase64(raw.data)) {
             setBrowserScreenshot(raw.data);
           }
@@ -338,12 +539,41 @@ function Chat() {
           }
           // Clear actions on new task start
           if (raw.status === "starting") {
+            clearedRef.current = false;
             setBrowserActions([]);
             setBrowserScreenshot(null);
             setBrowserError(null);
+            setLiveViewUrl(null);
+            setUserActionNeeded(null);
           }
         } else if (raw.type === "browser-error") {
           setBrowserError(raw.error);
+        } else if (raw.type === "browser-liveview-url") {
+          setLiveViewUrl(raw.url);
+        } else if (raw.type === "user-action-needed") {
+          setUserActionNeeded({
+            message: raw.message,
+            askType: raw.askType
+          });
+          const notificationsEnabled =
+            localStorage.getItem("notifications") === "enabled";
+          if (
+            notificationsEnabled &&
+            typeof Notification !== "undefined" &&
+            Notification.permission === "granted"
+          ) {
+            const title =
+              raw.askType === "action_needed"
+                ? "Agent needs your help"
+                : "Agent has a question";
+            const notification = new Notification(title, {
+              body: raw.message
+            });
+            notification.onclick = () => {
+              window.focus();
+              notification.close();
+            };
+          }
         }
       } catch {
         // Not JSON or not our event — ignore
@@ -371,20 +601,42 @@ function Chat() {
     const text = input.trim();
     if (!text || isStreaming) return;
     setInput("");
+    setUserActionNeeded(null);
     sendMessage({ role: "user", parts: [{ type: "text", text }] });
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
   }, [input, isStreaming, sendMessage]);
 
-  const handleClear = useCallback(() => {
+  const handleClear = useCallback(async () => {
+    clearedRef.current = true;
     clearHistory();
     setBrowserScreenshot(null);
     setBrowserActions([]);
     setBrowserStatus("idle");
     setBrowserStatusMessage("");
     setBrowserError(null);
-  }, [clearHistory]);
+    setLiveViewUrl(null);
+    setUserActionNeeded(null);
+    try {
+      await agent.call("closeBrowserSession");
+    } catch {
+      // best-effort — session may not exist
+    }
+  }, [clearHistory, agent]);
+
+  const handleContinue = useCallback(() => {
+    setUserActionNeeded(null);
+    sendMessage({
+      role: "user",
+      parts: [
+        {
+          type: "text",
+          text: "I've resolved the issue, please take a page_snapshot and continue."
+        }
+      ]
+    });
+  }, [sendMessage]);
 
   return (
     <div className="flex flex-col h-screen bg-kumo-elevated">
@@ -399,8 +651,8 @@ function Chat() {
               AI Browser
             </h1>
             <Badge variant="secondary">
-              <ChatCircleDotsIcon size={12} weight="bold" className="mr-1" />
-              Stagehand
+              <GlobeIcon size={12} weight="bold" className="mr-1" />
+              Live View
             </Badge>
           </div>
           <div className="flex items-center gap-3">
@@ -415,6 +667,7 @@ function Chat() {
               </Text>
             </div>
             <ThemeToggle />
+            <NotificationToggle />
             <Button
               variant="secondary"
               icon={<TrashIcon size={16} />}
@@ -519,6 +772,14 @@ function Chat() {
 
           {/* Input */}
           <div className="border-t border-kumo-line bg-kumo-base shrink-0">
+            {userActionNeeded && (
+              <UserActionBanner
+                message={userActionNeeded.message}
+                askType={userActionNeeded.askType}
+                onContinue={handleContinue}
+                onDismiss={() => setUserActionNeeded(null)}
+              />
+            )}
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -581,6 +842,7 @@ function Chat() {
             browserStatus={browserStatus}
             statusMessage={browserStatusMessage}
             error={browserError}
+            liveViewUrl={liveViewUrl}
           />
         </div>
       </div>

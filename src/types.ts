@@ -24,7 +24,13 @@ export type BrowserEvent =
       status: BrowserStatus;
       message?: string;
     }
-  | { type: "browser-error"; error: string };
+  | { type: "browser-error"; error: string }
+  | { type: "browser-liveview-url"; url: string }
+  | {
+      type: "user-action-needed";
+      message: string;
+      askType: "question" | "action_needed";
+    };
 
 // ── Runtime validation ──────────────────────────────────────────────
 // Validates that an unknown value from the WebSocket is a BrowserEvent.
@@ -33,7 +39,9 @@ const BROWSER_EVENT_TYPES = new Set([
   "browser-screenshot",
   "browser-action",
   "browser-status",
-  "browser-error"
+  "browser-error",
+  "browser-liveview-url",
+  "user-action-needed"
 ]);
 
 export function isBrowserEvent(value: unknown): value is BrowserEvent {

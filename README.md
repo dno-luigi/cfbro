@@ -1,219 +1,84 @@
-# Agent Starter
+# AI Browser Use
 
-![npm i agents command](./npm-agents-banner.svg)
+An AI agent that controls a real web browser using Playwright, running on Cloudflare Workers. Ask it to browse the web, fill forms, extract information, and more — all through a chat interface with a live browser view.
 
-<a href="https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agents-starter"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare"/></a>
+Built with the [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/), [Workers AI](https://developers.cloudflare.com/workers-ai/), and [@cloudflare/playwright](https://developers.cloudflare.com/browser-rendering/).
 
-A starter template for building AI chat agents on Cloudflare, powered by the [Agents SDK](https://developers.cloudflare.com/agents/).
+## Features
 
-Uses Workers AI (no API key required), with tools for weather, timezone detection, calculations with approval, and task scheduling.
+- **Browser automation** — Navigate, click, type, scroll, and extract text from any public website
+- **Live browser view** — Real-time screencast of the browser alongside the chat
+- **Interactive Live View** — Full Chrome DevTools access for inspecting DOM, debugging JS, and monitoring network requests
+- **Human-in-the-loop** — The agent asks for help when it encounters CAPTCHAs, login screens, or unexpected issues
+- **SSRF protection** — Internal and reserved IP addresses are blocked to prevent server-side request forgery
+- **Real-time** — WebSocket connection with automatic reconnection and message persistence
 
 ## Quick start
 
 ```bash
-npx create-cloudflare@latest --template cloudflare/agents-starter
-cd agents-starter
+git clone https://github.com/harshil/ai-browser-use.git
+cd ai-browser-use
 npm install
+cp .env.example .env
+# Edit .env with your Cloudflare credentials
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) to see your agent in action.
+Open [http://localhost:5173](http://localhost:5173) and ask the agent to browse the web.
 
-Try these prompts to see the different features:
+Try these prompts:
 
-- **"What's the weather in Paris?"** — server-side tool (runs automatically)
-- **"What timezone am I in?"** — client-side tool (browser provides the answer)
-- **"Calculate 5000 \* 3"** — approval tool (asks you before running)
-- **"Remind me in 5 minutes to take a break"** — scheduling
+- **"Search for iPhone 16 on Amazon"**
+- **"Find top stories on Hacker News"**
+- **"Look up the weather in San Francisco"**
 
 ## Project structure
 
 ```
 src/
-  server.ts    # Chat agent with tools and scheduling
-  app.tsx      # Chat UI built with Kumo components
-  client.tsx   # React entry point
-  styles.css   # Tailwind + Kumo styles
+  server.ts      # Chat agent with Playwright browser tools
+  app.tsx        # Chat UI with browser view panel
+  screencast.ts  # CDP screencast for real-time browser streaming
+  types.ts       # Shared types, SSRF protection, validation
+  client.tsx     # React entry point
+  styles.css     # Tailwind + Kumo styles
 ```
 
-## What's included
+## How it works
 
-- **AI Chat** — Streaming responses powered by Workers AI via `AIChatAgent`
-- **Three tool patterns** — server-side auto-execute, client-side (browser), and human-in-the-loop approval
-- **Scheduling** — one-time, delayed, and recurring (cron) tasks
-- **Reasoning display** — shows model thinking as it streams, collapses when done
-- **Debug mode** — toggle in the header to inspect raw message JSON for each message
-- **Kumo UI** — Cloudflare's design system with dark/light mode
-- **Real-time** — WebSocket connection with automatic reconnection and message persistence
+The agent uses Workers AI (`@cf/moonshotai/kimi-k2.5`) to understand your requests and control a headless browser via Playwright tools:
 
-## Making it your own
+1. **navigate** — Go to a URL
+2. **page_snapshot** — Get a list of interactive elements with ref IDs
+3. **click** — Click an element by its ref number
+4. **fill** — Type text into an input field
+5. **press** — Press keyboard keys (Enter, Tab, Escape, etc.)
+6. **scroll** — Scroll the page up or down
+7. **extract_text** — Read visible text content from the page
+8. **ask_user** — Ask for help when stuck (CAPTCHAs, logins, etc.)
 
-### Name your project
+The agent follows an observe-act loop: it takes a page snapshot to "see" the page, then interacts with elements by their ref IDs, and takes another snapshot to verify the result.
 
-Update the name in `package.json` and `wrangler.jsonc` — the `name` in `wrangler.jsonc` becomes your deployed Worker's URL (`<name>.<subdomain>.workers.dev`).
+## Configuration
 
-### Change the system prompt
+### Required secrets
 
-Edit the `system` string in `server.ts` to give your agent a different personality or focus area. This is the most impactful single change you can make.
+Set these in your `.env` file for local development, or via `wrangler secret put` for production:
 
-### Replace the demo tools with real ones
+| Variable                      | Description                                           |
+| ----------------------------- | ----------------------------------------------------- |
+| `CLOUDFLARE_ACCOUNT_ID`       | Your Cloudflare Account ID (found in the dashboard)   |
+| `BROWSER_RENDERING_API_TOKEN` | API token with "Browser Rendering - Edit" permissions |
 
-The starter ships with demo tools (`getWeather` returns random data, `calculate` does basic arithmetic). Replace them with real implementations:
+The Live View feature requires both secrets. Without them, the app still works with the screencast-only view.
 
-```ts
-// In server.ts, replace a demo tool with a real API call:
-getWeather: tool({
-  description: "Get the current weather for a city",
-  inputSchema: z.object({ city: z.string() }),
-  execute: async ({ city }) => {
-    const res = await fetch(`https://api.weather.example/${city}`);
-    return res.json();
-  }
-}),
-```
+### Create the API token
 
-### Add your own tools
-
-Add new tools to the `tools` object in `server.ts`. There are three patterns:
-
-```ts
-// Auto-execute: runs on the server, no user interaction
-myTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  execute: async (input) => { /* return result */ }
-}),
-
-// Client-side: no execute function, browser provides the result
-// Handle it in app.tsx via the onToolCall callback
-browserTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ })
-}),
-
-// Approval: add needsApproval to gate execution
-sensitiveTool: tool({
-  description: "...",
-  inputSchema: z.object({ /* ... */ }),
-  needsApproval: async (input) => true, // or conditional logic
-  execute: async (input) => { /* runs after approval */ }
-}),
-```
-
-### Customize scheduled task behavior
-
-When a scheduled task fires, `executeTask` runs on the server. It does its work and then uses `this.broadcast()` to notify connected clients (shown as a toast notification in the UI). Replace it with your own logic:
-
-```ts
-async executeTask(description: string, task: Schedule<string>) {
-  // Do the actual work
-  await sendEmail({ to: "user@example.com", subject: description });
-
-  // Notify connected clients
-  this.broadcast(
-    JSON.stringify({ type: "scheduled-task", description, timestamp: new Date().toISOString() })
-  );
-}
-```
-
-> **Why `broadcast()` instead of `saveMessages()`?** Injecting into chat history can cause the AI to see the notification as new context and re-trigger the same task in a loop. `broadcast()` sends a one-off event that the client displays separately from the conversation.
-
-### Remove scheduling
-
-If you don't need scheduling, remove `scheduleTask`, `getScheduledTasks`, and `cancelScheduledTask` from the tools object, the `executeTask` method, and the schedule-related imports (`getSchedulePrompt`, `scheduleSchema`, `Schedule`, `generateId`).
-
-### Add state beyond chat messages
-
-Use `this.setState()` and `this.state` for real-time state that syncs to all connected clients. See [Store and sync state](https://developers.cloudflare.com/agents/api-reference/store-and-sync-state/).
-
-### Add callable methods
-
-Expose agent methods as typed RPC that your client can call directly:
-
-```ts
-import { callable } from "agents";
-
-export class ChatAgent extends AIChatAgent<Env> {
-  @callable()
-  async getStats() {
-    return { messageCount: this.messages.length };
-  }
-}
-
-// Client-side:
-const stats = await agent.call("getStats");
-```
-
-See [Callable methods](https://developers.cloudflare.com/agents/api-reference/callable-methods/).
-
-### Connect to MCP servers
-
-Add external tools from MCP servers:
-
-```ts
-async onChatMessage(onFinish, options) {
-  // Connect to an MCP server
-  await this.mcp.connect("https://my-mcp-server.example/sse");
-
-  const result = streamText({
-    // ...
-    tools: {
-      ...myTools,
-      ...this.mcp.getAITools() // Include MCP tools
-    }
-  });
-}
-```
-
-See [MCP Client API](https://developers.cloudflare.com/agents/api-reference/mcp-client-api/).
-
-## Use a different AI model provider
-
-The starter uses [Workers AI](https://developers.cloudflare.com/workers-ai/) by default (no API key needed). To use a different provider:
-
-### OpenAI
-
-```bash
-npm install @ai-sdk/openai
-```
-
-```ts
-// In server.ts, replace the model:
-import { openai } from "@ai-sdk/openai";
-
-// Inside onChatMessage:
-const result = streamText({
-  model: openai("gpt-5.2")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
-
-```
-OPENAI_API_KEY=your-key-here
-```
-
-### Anthropic
-
-```bash
-npm install @ai-sdk/anthropic
-```
-
-```ts
-import { anthropic } from "@ai-sdk/anthropic";
-
-const result = streamText({
-  model: anthropic("claude-sonnet-4-20250514")
-  // ...
-});
-```
-
-Create a `.env` file with your API key:
-
-```
-ANTHROPIC_API_KEY=your-key-here
-```
+1. Go to [API Tokens](https://dash.cloudflare.com/profile/api-tokens)
+2. Click "Create Token"
+3. Use the "Custom token" template
+4. Grant **Browser Rendering - Edit** permission
+5. Copy the token into your `.env` file
 
 ## Deploy
 
@@ -221,14 +86,21 @@ ANTHROPIC_API_KEY=your-key-here
 npm run deploy
 ```
 
-Your agent is live on Cloudflare's global network. Messages persist in SQLite, streams resume on disconnect, and the agent hibernates when idle.
+Then set the secrets on your deployed Worker:
 
-## Learn more
+```bash
+npx wrangler secret put CLOUDFLARE_ACCOUNT_ID
+npx wrangler secret put BROWSER_RENDERING_API_TOKEN
+```
 
-- [Agents SDK documentation](https://developers.cloudflare.com/agents/)
-- [Build a chat agent tutorial](https://developers.cloudflare.com/agents/getting-started/build-a-chat-agent/)
-- [Chat agents API reference](https://developers.cloudflare.com/agents/api-reference/chat-agents/)
-- [Workers AI models](https://developers.cloudflare.com/workers-ai/models/)
+## Tech stack
+
+- [Cloudflare Workers](https://developers.cloudflare.com/workers/) — Serverless execution
+- [Workers AI](https://developers.cloudflare.com/workers-ai/) — AI model inference (no API key needed)
+- [Browser Rendering](https://developers.cloudflare.com/browser-rendering/) — Headless browser on the edge
+- [@cloudflare/playwright](https://developers.cloudflare.com/browser-rendering/) — Playwright bindings for Workers
+- [Agents SDK](https://developers.cloudflare.com/agents/) — Durable Object-based agent framework
+- [Kumo](https://developers.cloudflare.com/kumo/) — Cloudflare's design system
 
 ## License
 

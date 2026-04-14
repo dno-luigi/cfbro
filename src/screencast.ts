@@ -1,4 +1,4 @@
-import type { Page } from "playwright";
+import type { Page } from "@cloudflare/playwright";
 
 // ~4 frames per second
 const THROTTLE_MS = 250;
