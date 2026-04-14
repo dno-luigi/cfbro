@@ -16,6 +16,7 @@ import {
   sessions,
   type Browser,
   type BrowserContext,
+  type CDPSession,
   type Page,
   type WorkersLaunchOptions
 } from "@cloudflare/playwright";
@@ -59,11 +60,9 @@ async function resolveSessionId(
   }
 }
 
-async function getPageSnapshot(page: Page): Promise<string> {
+async function getPageSnapshot(page: Page, cdp: CDPSession): Promise<string> {
   try {
-    const cdp = await page.context().newCDPSession(page);
     const { nodes } = await cdp.send("Accessibility.getFullAXTree");
-    await cdp.detach();
 
     const skipRoles = new Set([
       "generic",
@@ -195,6 +194,19 @@ export class ChatAgent extends AIChatAgent<Env> {
   private _switchingPage: Promise<void> | null = null;
   private _knownTargetIds: Set<string> = new Set();
   private _sessionReady: Promise<Page> | null = null;
+  private _snapshotCdp: CDPSession | null = null;
+
+  private async getSnapshotCdp(): Promise<CDPSession> {
+    if (this._snapshotCdp) {
+      return this._snapshotCdp;
+    }
+    this._snapshotCdp = await this._page!.context().newCDPSession(this._page!);
+    return this._snapshotCdp;
+  }
+
+  private invalidateSnapshotCdp(): void {
+    this._snapshotCdp = null;
+  }
 
   // ── Chat message handler ────────────────────────────────────────────
 
@@ -257,7 +269,8 @@ export class ChatAgent extends AIChatAgent<Env> {
               status: "acting",
               message: "Reading page..."
             });
-            const snapshot = await getPageSnapshot(page);
+            const cdp = await this.getSnapshotCdp();
+            const snapshot = await getPageSnapshot(page, cdp);
             broadcastEvent({
               type: "browser-action",
               action: "Captured page snapshot",
@@ -265,6 +278,7 @@ export class ChatAgent extends AIChatAgent<Env> {
             });
             return { success: true, url: page.url(), snapshot };
           } catch (err) {
+            this.invalidateSnapshotCdp();
             return { success: false, error: String(err) };
           }
         }
@@ -303,7 +317,7 @@ export class ChatAgent extends AIChatAgent<Env> {
             await page
               .getByRole(role as AriaRole, { name, exact: false })
               .click();
-            await page.waitForTimeout(1000);
+            await page.waitForLoadState("domcontentloaded").catch(() => {});
 
             await this.detectAndSwitchToNewPage(page, pageTargetsBefore.length);
 
@@ -358,7 +372,6 @@ export class ChatAgent extends AIChatAgent<Env> {
             await page
               .getByRole(role as AriaRole, { name, exact: false })
               .fill(value);
-            await page.waitForTimeout(500);
             broadcastEvent({
               type: "browser-action",
               action: `Filled ${role} "${name}" with "${value}"`,
@@ -389,7 +402,7 @@ export class ChatAgent extends AIChatAgent<Env> {
           try {
             const page = await this.ensureBrowserSession(broadcastEvent);
             await page.keyboard.press(key);
-            await page.waitForTimeout(500);
+            await page.waitForLoadState("domcontentloaded").catch(() => {});
             broadcastEvent({
               type: "browser-action",
               action: `Pressed ${key}`,
@@ -422,7 +435,6 @@ export class ChatAgent extends AIChatAgent<Env> {
             const page = await this.ensureBrowserSession(broadcastEvent);
             const delta = direction === "down" ? amount : -amount;
             await page.mouse.wheel(0, delta * 720);
-            await page.waitForTimeout(500);
             broadcastEvent({
               type: "browser-action",
               action: `Scrolled ${direction}`,
@@ -470,7 +482,6 @@ export class ChatAgent extends AIChatAgent<Env> {
             await page
               .getByRole(role as AriaRole, { name, exact: false })
               .selectOption(value);
-            await page.waitForTimeout(500);
             broadcastEvent({
               type: "browser-action",
               action: `Selected "${value}" in ${role} "${name}"`,
@@ -507,7 +518,6 @@ export class ChatAgent extends AIChatAgent<Env> {
             await page
               .getByRole(role as AriaRole, { name, exact: false })
               .check();
-            await page.waitForTimeout(500);
             broadcastEvent({
               type: "browser-action",
               action: `Checked ${role} "${name}"`,
@@ -644,14 +654,20 @@ export class ChatAgent extends AIChatAgent<Env> {
     });
 
     try {
-      const { browser, page } = await createBrowser(this.env, {
+      const { browser, context, page } = await createBrowser(this.env, {
         keepAlive: KEEP_ALIVE_MS
       });
       this._browser = browser;
+      this._context = context;
       this._page = page;
+
+      context.on("page", (newPage) => {
+        this.switchToPage(newPage);
+      });
     } catch (err) {
       console.error("[Browser] Failed to launch browser:", err);
       this._browser = null;
+      this._context = null;
       this._page = null;
       throw err;
     }
@@ -660,16 +676,8 @@ export class ChatAgent extends AIChatAgent<Env> {
       broadcastEvent({ type: "browser-screenshot", data: base64 });
     });
 
-    const context = this._page.context();
-    if (context !== this._context) {
-      this._context = context;
-      context.on("page", (newPage) => {
-        this.switchToPage(newPage);
-      });
-    }
-
     try {
-      const cdp = await context.newCDPSession(this._page);
+      const cdp = await this._context!.newCDPSession(this._page!);
       const { targetInfos } = await cdp.send("Target.getTargets");
       await cdp.detach();
       this._knownTargetIds = new Set(
@@ -712,6 +720,7 @@ export class ChatAgent extends AIChatAgent<Env> {
     this._browser = null;
     this._context = null;
     this._page = null;
+    this._snapshotCdp = null;
     this._knownTargetIds.clear();
   }
 
@@ -738,6 +747,8 @@ export class ChatAgent extends AIChatAgent<Env> {
     if (newPage.isClosed()) return;
 
     console.log(`[Browser] Switching to new page: ${newPage.url()}`);
+
+    this._snapshotCdp = null;
 
     if (this._stopScreencast) {
       try {
