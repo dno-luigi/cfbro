@@ -674,7 +674,7 @@ function Chat() {
               <span className="mr-2">
                 <GlobeIcon size={22} className="inline-block" weight="bold" />
               </span>
-              AI Browser
+              Agent Browsing
             </h1>
             <Badge variant="secondary">
               <GlobeIcon size={12} weight="bold" className="mr-1" />

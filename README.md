@@ -1,4 +1,4 @@
-# AI Browser Use
+# Agent Browsing
 
 An AI agent that controls a real web browser using Playwright, running on Cloudflare Workers. Ask it to browse the web, fill forms, extract information, and more — all through a chat interface with a live browser view.
 
@@ -16,8 +16,8 @@ Built with the [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/
 ## Quick start
 
 ```bash
-git clone https://github.com/harshil/ai-browser-use.git
-cd ai-browser-use
+git clone https://github.com/harshil1712/agent-browsing.git
+cd agent-browsing
 npm install
 cp .env.example .env
 # Edit .env with your Cloudflare credentials

@@ -1,5 +1,5 @@
 {
-  "name": "ai-browser-use",
+  "name": "agent-browsing",
   "version": "1.0.0",
   "private": true,
   "description": "AI browser automation agent using Cloudflare Workers and Playwright",

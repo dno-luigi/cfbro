@@ -4,7 +4,7 @@
  */
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "ai-browser-use",
+  "name": "agent-browsing",
   // Set CLOUDFLARE_ACCOUNT_ID env var or let Wrangler prompt for it.
   // Do not commit account_id to version control.
   "main": "src/server.ts",
