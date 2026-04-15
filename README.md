@@ -28,9 +28,9 @@ Open [http://localhost:5173](http://localhost:5173) and ask the agent to browse 
 
 Try these prompts:
 
-- **"Search for iPhone 16 on Amazon"**
-- **"Find top stories on Hacker News"**
-- **"Look up the weather in San Francisco"**
+- **"Search for iPhone 17 on Amazon"**
+- **"Find a hotel in Lisbon"**
+- **"Book a table at the Famous Indian Restaurant"**
 
 ## Project structure
 
@@ -65,10 +65,10 @@ The agent follows an observe-act loop: it takes a page snapshot to "see" the pag
 
 Set these in your `.env` file for local development, or via `wrangler secret put` for production:
 
-| Variable                      | Description                                           |
-| ----------------------------- | ----------------------------------------------------- |
-| `CLOUDFLARE_ACCOUNT_ID`       | Your Cloudflare Account ID (found in the dashboard)   |
-| `BROWSER_RENDERING_API_TOKEN` | API token with "Browser Rendering - Edit" permissions |
+| Variable                      | Description                                         |
+| ----------------------------- | --------------------------------------------------- |
+| `CLOUDFLARE_ACCOUNT_ID`       | Your Cloudflare Account ID (found in the dashboard) |
+| `BROWSER_RENDERING_API_TOKEN` | API token with "Browser Run - Edit" permissions     |
 
 The Live View feature requires both secrets. Without them, the app still works with the screencast-only view.
 
@@ -77,7 +77,7 @@ The Live View feature requires both secrets. Without them, the app still works w
 1. Go to [API Tokens](https://dash.cloudflare.com/profile/api-tokens)
 2. Click "Create Token"
 3. Use the "Custom token" template
-4. Grant **Browser Rendering - Edit** permission
+4. Grant **Browser Run - Edit** permission
 5. Copy the token into your `.env` file
 
 ## Deploy
@@ -97,7 +97,7 @@ npx wrangler secret put BROWSER_RENDERING_API_TOKEN
 
 - [Cloudflare Workers](https://developers.cloudflare.com/workers/) — Serverless execution
 - [Workers AI](https://developers.cloudflare.com/workers-ai/) — AI model inference (no API key needed)
-- [Browser Rendering](https://developers.cloudflare.com/browser-rendering/) — Headless browser on the edge
+- [Browser Run](https://developers.cloudflare.com/browser-rendering/) — Headless browser on the edge
 - [@cloudflare/playwright](https://developers.cloudflare.com/browser-rendering/) — Playwright bindings for Workers
 - [Agents SDK](https://developers.cloudflare.com/agents/) — Durable Object-based agent framework
 - [Kumo](https://developers.cloudflare.com/kumo/) — Cloudflare's design system
