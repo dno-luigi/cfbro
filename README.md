@@ -1,16 +1,14 @@
 # Agent Browsing
 
-An AI agent that controls a real web browser using Playwright, running on Cloudflare Workers. Ask it to browse the web, fill forms, extract information, and more — all through a chat interface with a live browser view.
+An AI agent that controls a real web browser using the Agents SDK browser tools, running on Cloudflare Workers. Ask it to browse the web, fill forms, extract information, and more — all through a chat interface with a live browser view.
 
-Built with the [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/), [Workers AI](https://developers.cloudflare.com/workers-ai/), and [@cloudflare/playwright](https://developers.cloudflare.com/browser-rendering/).
+Built with the [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/), [Workers AI](https://developers.cloudflare.com/workers-ai/), and [Browser Run](https://developers.cloudflare.com/browser-rendering/).
 
 ## Features
 
-- **Browser automation** — Navigate, click, type, scroll, and extract text from any public website
-- **Live browser view** — Real-time screencast of the browser alongside the chat
-- **Interactive Live View** — Full Chrome DevTools access for inspecting DOM, debugging JS, and monitoring network requests
-- **Human-in-the-loop** — The agent asks for help when it encounters CAPTCHAs, login screens, or unexpected issues
-- **SSRF protection** — Internal and reserved IP addresses are blocked to prevent server-side request forgery
+- **CDP-powered browser automation** — The agent writes Chrome DevTools Protocol code to navigate, click, type, scroll, and extract data from any public website
+- **Live browser view** — Real-time interactive browser view via Live View
+- **Native human-in-the-loop** — Browser Run hands control to the user for CAPTCHAs, login screens, sensitive input, and approvals, then resumes automatically when the user selects Done or Failed
 - **Real-time** — WebSocket connection with automatic reconnection and message persistence
 
 ## Quick start
@@ -19,8 +17,6 @@ Built with the [Cloudflare Agents SDK](https://developers.cloudflare.com/agents/
 git clone https://github.com/harshil1712/agent-browsing.git
 cd agent-browsing
 npm install
-cp .env.example .env
-# Edit .env with your Cloudflare credentials
 npm run dev
 ```
 
@@ -36,49 +32,30 @@ Try these prompts:
 
 ```
 src/
-  server.ts      # Chat agent with Playwright browser tools
-  app.tsx        # Chat UI with browser view panel
-  screencast.ts  # CDP screencast for real-time browser streaming
-  types.ts       # Shared types, SSRF protection, validation
-  client.tsx     # React entry point
-  styles.css     # Tailwind + Kumo styles
+  server.ts      # Chat agent with Agents SDK browser tools
+  app.tsx         # Chat UI with browser view panel
+  prompt.ts       # System prompt for the agent
+  types.ts        # Shared types and validation
+  client.tsx      # React entry point
+  styles.css      # Tailwind + Kumo styles
 ```
 
 ## How it works
 
-The agent uses Workers AI (`@cf/moonshotai/kimi-k2.5`) to understand your requests and control a headless browser via Playwright tools:
+The agent uses Workers AI (`@cf/moonshotai/kimi-k2.5`) to understand your requests and control a headless browser via the Chrome DevTools Protocol:
 
-1. **navigate** — Go to a URL
-2. **page_snapshot** — Get a list of interactive elements with ref IDs
-3. **click** — Click an element by its ref number
-4. **fill** — Type text into an input field
-5. **press** — Press keyboard keys (Enter, Tab, Escape, etc.)
-6. **scroll** — Scroll the page up or down
-7. **extract_text** — Read visible text content from the page
-8. **ask_user** — Ask for help when stuck (CAPTCHAs, logins, etc.)
+1. **browser_execute** — Run CDP JavaScript code against a live browser
+2. **browser_markdown** — Read a web page as Markdown
+3. **browser_extract** — Extract structured data from a page with AI
+4. **browser_links** — List all links on a page
+5. **browser_scrape** — Scrape specific elements by CSS selector
+6. **browser_handoff** — Start a native Browser Run handoff and wait for the user to select Done or Failed
 
-The agent follows an observe-act loop: it takes a page snapshot to "see" the page, then interacts with elements by their ref IDs, and takes another snapshot to verify the result.
+The agent writes CDP code to interact with the browser directly, using a persistent session that survives across chat messages.
 
 ## Configuration
 
-### Required secrets
-
-Set these in your `.env` file for local development, or via `wrangler secret put` for production:
-
-| Variable                      | Description                                         |
-| ----------------------------- | --------------------------------------------------- |
-| `CLOUDFLARE_ACCOUNT_ID`       | Your Cloudflare Account ID (found in the dashboard) |
-| `BROWSER_RENDERING_API_TOKEN` | API token with "Browser Run - Edit" permissions     |
-
-The Live View feature requires both secrets. Without them, the app still works with the screencast-only view.
-
-### Create the API token
-
-1. Go to [API Tokens](https://dash.cloudflare.com/profile/api-tokens)
-2. Click "Create Token"
-3. Use the "Custom token" template
-4. Grant **Browser Run - Edit** permission
-5. Copy the token into your `.env` file
+No secrets are required. The browser binding and worker loader binding are configured in `wrangler.jsonc`.
 
 ## Deploy
 
@@ -86,20 +63,12 @@ The Live View feature requires both secrets. Without them, the app still works w
 npm run deploy
 ```
 
-Then set the secrets on your deployed Worker:
-
-```bash
-npx wrangler secret put CLOUDFLARE_ACCOUNT_ID
-npx wrangler secret put BROWSER_RENDERING_API_TOKEN
-```
-
 ## Tech stack
 
 - [Cloudflare Workers](https://developers.cloudflare.com/workers/) — Serverless execution
 - [Workers AI](https://developers.cloudflare.com/workers-ai/) — AI model inference (no API key needed)
 - [Browser Run](https://developers.cloudflare.com/browser-rendering/) — Headless browser on the edge
-- [@cloudflare/playwright](https://developers.cloudflare.com/browser-rendering/) — Playwright bindings for Workers
-- [Agents SDK](https://developers.cloudflare.com/agents/) — Durable Object-based agent framework
+- [Agents SDK](https://developers.cloudflare.com/agents/) — Durable Object-based agent framework with browser tools
 - [Kumo](https://developers.cloudflare.com/kumo/) — Cloudflare's design system
 
 ## License

@@ -8,14 +8,16 @@
   // Set CLOUDFLARE_ACCOUNT_ID env var or let Wrangler prompt for it.
   // Do not commit account_id to version control.
   "main": "src/server.ts",
-  "compatibility_date": "2026-03-02",
+  "compatibility_date": "2026-07-24",
   "compatibility_flags": ["nodejs_compat"],
   "ai": {
     "binding": "AI"
   },
   "browser": {
-    "binding": "BROWSER"
+    "binding": "BROWSER",
+    "remote": true
   },
+  "worker_loaders": [{ "binding": "LOADER" }],
   "assets": {
     "directory": "./public",
     "not_found_handling": "single-page-application",
